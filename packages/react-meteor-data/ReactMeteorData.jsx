@@ -61,6 +61,19 @@ class MeteorDataManager {
             };
 
             data = component.getMeteorData();
+            if (!(data && (typeof data) === 'object')) {
+              throw new Error('Expected object returned from getMeteorData');
+            }
+          } catch (e) {
+            // If we throw the exception out of the autorun, it won't be rerun
+            // when the dependencies change.  Even if we pass it out, if we
+            // throw it out of calculateData, React treats that as an error in
+            // the wrapper component, which our error boundary doesn't catch.
+            //
+            // TODO: Use a better error logging utility when available
+            // (https://github.com/meteor/meteor-feature-requests/issues/205).
+            console.error("Exception from withTracker getMeteorData function:", e);
+            data = undefined;
           } finally {
             component.setState = savedSetState;
           }
@@ -81,7 +94,7 @@ class MeteorDataManager {
       })
     ));
 
-    if (Package.mongo && Package.mongo.Mongo) {
+    if (data && Package.mongo && Package.mongo.Mongo) {
       Object.keys(data).forEach((key) => {
         if (data[key] instanceof Package.mongo.Mongo.Cursor) {
           console.warn(
@@ -100,16 +113,15 @@ class MeteorDataManager {
     const component = this.component;
     const oldData = this.oldData;
 
-    if (!(newData && (typeof newData) === 'object')) {
-      throw new Error('Expected object returned from getMeteorData');
-    }
+    let failedToGetData = (newData === undefined);
+    if (failedToGetData) newData = {};
     // update componentData in place based on newData
     for (let key in newData) {
       component.data[key] = newData[key];
     }
     // if there is oldData (which is every time this method is called
-    // except the first), delete keys in newData that aren't in
-    // oldData.  don't interfere with other keys, in case we are
+    // except the first), delete keys in oldData that aren't in
+    // newData.  don't interfere with other keys, in case we are
     // co-existing with something else that writes to a component's
     // this.data.
     if (oldData) {
@@ -120,6 +132,7 @@ class MeteorDataManager {
       }
     }
     this.oldData = newData;
+    component.failedToGetData = failedToGetData;
   }
 }
 
@@ -157,6 +170,15 @@ export const ReactMeteorData = {
   componentWillUnmount() {
     this._meteorDataManager.dispose();
   },
+
+  componentDidCatch(error, info) {
+    // It looks like the error gets logged to the console without us having to
+    // do anything here.
+
+    // It looks like if we don't setState here, then by default, React leaves
+    // this component empty.  That's fine for us and simpler than trying to
+    // ignore only the next componentWillUpdate.
+  }
 };
 
 class ReactComponent extends React.Component {}
@@ -181,6 +203,10 @@ export default function connect(options) {
         return getMeteorData(this.props);
       }
       render() {
+        if (this.failedToGetData) {
+          // Be consistent with rendering errors.  (<></> would be better if supported.)
+          return <span/>;
+        }
         return <WrappedComponent {...this.props} {...this.data} />;
       }
     }
